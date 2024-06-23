@@ -20,6 +20,15 @@ struct PaginationParams {
     per_page: Option<usize>,
 }
 
+#[derive(Serialize)]
+struct PaginatedResponse<T> {
+    data: Vec<T>,
+    total: usize,
+    page: usize,
+    per_page: usize,
+    total_pages: usize,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct User {
     id: u32,
@@ -35,6 +44,19 @@ struct UserRequest {
 
 struct AppState {
     users: Mutex<HashMap<u32, User>>,
+}
+
+fn populate_sample_data(appdata: &web::Data<AppState>) {
+    let mut users = appdata.users.lock().unwrap();
+
+    for i in 1..=100 {
+        let user = User {
+            id: i,
+            name: format!("User {}", i),
+            email: format!("user{}@example.com", i),
+        };
+        users.insert(i, user);
+    }
 }
 
 async fn create_user(
@@ -54,12 +76,33 @@ async fn create_user(
     users.insert(new_id, new_user.clone());
     Ok(HttpResponse::Created().json(new_user))
 }
-async fn get_users(appdata: web::Data<AppState>) -> Result<HttpResponse, UserError> {
+async fn get_users(
+    appdata: web::Data<AppState>,
+    web::Query(params): web::Query<PaginationParams>,
+) -> Result<HttpResponse, UserError> {
     let users = appdata
         .users
         .lock()
         .map_err(|_| UserError::InternalServerError)?;
-    Ok(HttpResponse::Ok().json(users.values().collect::<Vec<&User>>()))
+
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(10);
+
+    let total = users.len();
+    let total_pages = (total as f64 / per_page as f64).ceil() as usize;
+
+    let start = (page - 1) * per_page;
+
+    let data: Vec<&User> = users.values().skip(start).take(per_page).collect();
+
+    let response = PaginatedResponse {
+        data,
+        total,
+        page,
+        per_page,
+        total_pages,
+    };
+    Ok(HttpResponse::Ok().json(response))
 }
 
 async fn get_user(
@@ -171,6 +214,8 @@ pub async fn run() -> std::io::Result<()> {
     let appdata = web::Data::new(AppState {
         users: Mutex::new(HashMap::new()),
     });
+
+    populate_sample_data(&appdata);
 
     HttpServer::new(move || {
         App::new()
